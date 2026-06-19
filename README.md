@@ -1,3 +1,5 @@
+![illustration](https://github.com/AmLeh/alcatel_atr420_resurrection/blob/main/photo1.jpg)
+
 # Alcatel ATR420 Resurrection
 
 Reverse engineering notes, tooling, and replacement firmware experiments for
