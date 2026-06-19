@@ -1,0 +1,38 @@
+# Local/editor files
+.vscode/
+__pycache__/
+*.pyc
+
+# Local toolchains and third-party binaries
+compilers/
+
+# Build outputs and generated compiler intermediates
+firmware/build/
+demo_panel/build/
+*.ihx
+*.lk
+*.lst
+*.map
+*.mem
+*.rel
+*.rst
+*.sym
+*.dumpcustom*
+
+# Original firmware dumps and derived full disassemblies.
+# Keep these locally unless redistribution is explicitly cleared.
+ST_M*.HEX
+ST_M*.bin
+ST_M*.asm
+ST_M*_annotated.asm
+
+# Local photos/schematic scans can be large or copyrighted.
+*.jpg
+*.jpeg
+*.png
+schema/*.png
+schema/crops/*.png
+
+# Misc OS files
+Thumbs.db
+.DS_Store

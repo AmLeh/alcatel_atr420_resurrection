@@ -1,0 +1,19 @@
+flag,kind,handler,first_pc,tags,note
+20h.3,level,L58DC,58DC,,sync receive start
+24h.1,one-shot,L541E,541E,,event handler
+24h.2,one-shot,L542D,542D,,event handler
+20h.1,one-shot,L4D2A,4D2A,,timer tick event
+20h.2,level,L597C,597C,,sync transmit event
+25h.1,one-shot,L534F,534F,"latch,latch_read",latch read/status handler
+25h.0,one-shot,L568F,568F,,serial/sync related handler
+24h.0,one-shot,L4CFD,4CFD,,UART transmit/service handler
+23h.6,one-shot,L4A16/L51AB,4A16/51AB,,branch depends on 2Bh.2
+23h.7,one-shot,L2BE3,2BE3,movx,event handler
+2Eh.0,one-shot,L5609,5609,,2Eh sub-dispatcher
+24h.6,one-shot,L3271,3271,,event handler
+25h.2,one-shot,L4FD9,4FD9,latch,latch/state handler
+24h.4,one-shot,L3C5E/L06A6,3C5E/06A6,jump_table,branch depends on 2Bh.3
+24h.7,one-shot,L346C,346C,,event handler
+24h.3,one-shot,L57E0,57E0,jump_table,large mode/state dispatcher
+23h.5,one-shot,L5748,5748,jump_table,event handler
+24h.5,one-shot,L54B9,54B9,movx,event handler
