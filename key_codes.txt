@@ -21,3 +21,6 @@ MEM		0E
 ALARM		08
 KEY (lock)	0D
 ON/OFF		60
+
+TANGENTA/PTT pressed	2E
+TANGENTA/PTT released	2D

@@ -1,34 +1,6 @@
 typedef unsigned char u8;
 typedef unsigned int u16;
 
-#define PANEL_KEY_ON_OFF 0x60
-#define PANEL_KEY_IDLE 0x2F
-#define PANEL_KEY_PTT_PRESSED 0x2E
-#define PANEL_KEY_PTT_RELEASED 0x2D
-#define PANEL_KEY_APPEL 0x04
-
-#define PANEL_KEY_0 0x00
-#define PANEL_KEY_1 0x06
-#define PANEL_KEY_2 0x05
-#define PANEL_KEY_3 0x03
-#define PANEL_KEY_4 0x0F
-#define PANEL_KEY_5 0x11
-#define PANEL_KEY_6 0x12
-#define PANEL_KEY_7 0x14
-#define PANEL_KEY_8 0x18
-#define PANEL_KEY_9 0x16
-
-#define PANEL_IO_ANT_OFF 0x60
-#define PANEL_IO_ANT_ORANGE_ON_A 0x61
-#define PANEL_IO_SPEAKER_OFF 0x62
-#define PANEL_IO_SPEAKER_ON 0x63
-#define PANEL_IO_KEY_OFF 0x64
-#define PANEL_IO_KEY_ON 0x65
-#define PANEL_IO_BELL_OFF 0x66
-#define PANEL_IO_BELL_ON 0x67
-#define PANEL_IO_ANT_ORANGE_ON_B 0x68
-#define PANEL_IO_ANT_GREEN_ON 0x69
-
 __sfr __at(0x80) P0;
 __sfr __at(0x87) PCON;
 __sfr __at(0x88) TCON;
@@ -63,6 +35,11 @@ static volatile u8 hardware_watchdog_divider;
 static volatile u8 hardware_p32_divider;
 static volatile u8 io8243_busy;
 
+unsigned char __sdcc_external_startup(void) __nonbanked
+{
+    return 1;
+}
+
 static void tiny_delay(void)
 {
     __asm
@@ -78,6 +55,15 @@ static void short_delay(void)
     volatile u16 i;
 
     for (i = 0; i < 800; i++) {
+    }
+}
+
+static void medium_delay(void)
+{
+    u8 i;
+
+    for (i = 0; i < 80; i++) {
+        short_delay();
     }
 }
 
@@ -127,8 +113,9 @@ static void hardware_watchdog_start(void)
 
 static void latch_write(u8 select, u8 value)
 {
-    u8 old_ea = EA;
+    u8 old_ea;
 
+    old_ea = EA;
     EA = 0;
     io8243_busy = 1;
     P1 = select;
@@ -146,8 +133,9 @@ static void latch_write(u8 select, u8 value)
 static u8 latch_read_nibble(u8 select)
 {
     u8 value;
-    u8 old_ea = EA;
+    u8 old_ea;
 
+    old_ea = EA;
     EA = 0;
     io8243_busy = 1;
     P1 = select;
@@ -159,165 +147,6 @@ static u8 latch_read_nibble(u8 select)
     io8243_busy = 0;
     EA = old_ea;
     return value;
-}
-
-static void pll_clock_pulse_movx(void)
-{
-    __asm
-        mov r0,#0x00
-        mov a,#0x00
-        movx @r0,a
-    __endasm;
-}
-
-static void pll_send_bit(u8 bit_value)
-{
-    P3_3 = bit_value ? 1 : 0;
-    tiny_delay();
-    pll_clock_pulse_movx();
-    tiny_delay();
-}
-
-static void pll_original_preload_candidate(void)
-{
-    latch_write(0xCE, 0x7E);
-    latch_write(0x8E, 0x1E);
-}
-
-static void pll_original_postload_candidate(void)
-{
-    latch_write(0x8E, 0x8E);
-    latch_write(0xCE, 0x7E);
-}
-
-static void pll_shift_candidate_word(u8 r4, u8 r3, u8 r2, u8 mode_bit)
-{
-    u8 i;
-
-    P2 = 0x00;
-
-    if (mode_bit) {
-        pll_send_bit(1);
-        pll_send_bit(0);
-    } else {
-        pll_send_bit(0);
-        pll_send_bit(0);
-    }
-
-    pll_send_bit((r4 >> 1) & 1);
-    pll_send_bit(r4 & 1);
-
-    for (i = 0; i < 8; i++) {
-        pll_send_bit((r3 & 0x80) != 0);
-        r3 <<= 1;
-    }
-
-    for (i = 0; i < 8; i++) {
-        pll_send_bit((r2 & 0x40) != 0);
-        r2 <<= 1;
-    }
-
-    P3_3 = 0;
-}
-
-static void pll_program_candidate_digit_mode(u8 digit, u8 tx_mode)
-{
-    u8 r4;
-    u8 r3;
-    u8 r2;
-    u16 candidate;
-
-    candidate = (u16)(0x0100 + ((u16)digit * 0x25));
-    r4 = (u8)((candidate >> 10) & 0x03);
-    r3 = (u8)((candidate >> 2) & 0xFF);
-    r2 = (u8)((candidate & 0x03) << 5);
-
-    pll_original_preload_candidate();
-    pll_shift_candidate_word(r4, r3, r2, tx_mode);
-    pll_original_postload_candidate();
-}
-
-static void pll_program_candidate_digit(u8 digit)
-{
-    pll_program_candidate_digit_mode(digit, 0);
-}
-
-static void uart_send_panel(u8 value);
-
-static void radio_tx_rf_enable_candidate(void)
-{
-    /* Original L5964: RF/microphone latch candidate. */
-    latch_write(0xEE, 0x7E);
-    latch_write(0x5E, 0xFE);
-}
-
-static void radio_tx_rf_timer_latch_a(void)
-{
-    /* Original L4DE5 branch when 20h.0 is clear and 2Ah.7 is set. */
-    latch_write(0x8E, 0x1E);
-}
-
-static void radio_tx_rf_timer_latch_b(void)
-{
-    /* Original L4DE5 branch when 20h.0 is set and 2Ah.7 is set. */
-    latch_write(0xCE, 0xEE);
-}
-
-static void radio_tx_rf_disable_candidate(void)
-{
-    /* Original L5937 path: same select as L5964, but with RF/mic bit cleared. */
-    latch_write(0xEE, 0x7E);
-    latch_write(0x5E, 0x0E);
-}
-
-static void radio_tx_start(u8 digit)
-{
-    uart_send_panel(PANEL_IO_ANT_ORANGE_ON_B);
-    pll_program_candidate_digit_mode(digit, 1);
-    radio_tx_rf_enable_candidate();
-    radio_tx_rf_timer_latch_a();
-}
-
-static void radio_tx_stop(u8 digit)
-{
-    radio_tx_rf_timer_latch_b();
-    radio_tx_rf_disable_candidate();
-    pll_program_candidate_digit_mode(digit, 0);
-    uart_send_panel(PANEL_IO_ANT_OFF);
-}
-
-static void radio_tx_service(u8 *phase, u8 *divider)
-{
-    if (*divider != 0) {
-        (*divider)--;
-        return;
-    }
-
-    *divider = 5;
-    if (*phase) {
-        radio_tx_rf_timer_latch_b();
-        *phase = 0;
-    } else {
-        radio_tx_rf_timer_latch_a();
-        *phase = 1;
-    }
-}
-
-static u8 panel_key_to_digit(u8 key)
-{
-    switch (key) {
-    case PANEL_KEY_0: return 0;
-    case PANEL_KEY_1: return 1;
-    case PANEL_KEY_2: return 2;
-    case PANEL_KEY_3: return 3;
-    case PANEL_KEY_4: return 4;
-    case PANEL_KEY_5: return 5;
-    case PANEL_KEY_6: return 6;
-    case PANEL_KEY_7: return 7;
-    case PANEL_KEY_8: return 8;
-    case PANEL_KEY_9: return 9;
-    default: return 0xFF;
-    }
 }
 
 static void xmem_copy(u16 dst, u16 src, u8 len)
@@ -516,22 +345,9 @@ static u8 display_code(char ch)
     case 'X': return 0x21;
     case 'Y': return 0x22;
     case 'Z': return 0x23;
-    case 'r': return 0x0F;
-    case '*': return 0x28;
-    case '=': return 0x29;
-    case '<': return 0x2A;
-    case '>': return 0x2B;
-    case '/': return 0x2C;
-    case '+': return 0x2D;
     case '-': return 0x0B;
     default: return 0x24;
     }
-}
-
-static char hex_digit(u8 v)
-{
-    v &= 0x0F;
-    return (v < 10) ? (char)('0' + v) : (char)('A' + v - 10);
 }
 
 static void uart_send_panel(u8 value)
@@ -573,113 +389,80 @@ static void panel_show_text8(const char *text)
         display_code(text[6]), display_code(text[7]));
 }
 
-static void panel_show_key(u8 key)
+static void pll_clock_pulse_movx(void)
 {
-    panel_send_codes(
-        display_code('K'), display_code('E'), display_code('Y'), display_code(' '),
-        display_code(hex_digit(key >> 4)), display_code(hex_digit(key)),
-        display_code(' '), display_code(' '));
+    P2 = 0x00;
+    __asm
+        mov r0,#0x00
+        mov a,#0x00
+        movx @r0,a
+    __endasm;
 }
 
-static void panel_show_pll_digit(u8 digit)
-{
-    panel_send_codes(
-        display_code('P'), display_code('L'), display_code('L'), display_code(' '),
-        display_code('0' + digit), display_code(' '),
-        display_code(' '), display_code(' '));
-}
-
-static void panel_show_tx_digit(u8 digit)
-{
-    panel_send_codes(
-        display_code('T'), display_code('X'), display_code(' '), display_code(' '),
-        display_code('0' + digit), display_code(' '),
-        display_code(' '), display_code(' '));
-}
-
-static void radio_power_off(void)
+static void pulse_wr_burst(void)
 {
     u8 i;
 
-    /* Original key-60 path at L56D8 writes 2257h=0Bh before shutdown events. */
-    XBYTE(0x2257) = 0x0B;
-
-    for (i = 0; i < 10; i++) {
-        uart_send_panel(0x6A);
+    for (i = 0; i < 80; i++) {
+        pll_clock_pulse_movx();
+        short_delay();
     }
+}
 
-    panel_show_text8("BYE BYE ");
+static void latch_burst(u8 select, u8 value)
+{
+    u8 i;
 
-    for (;;) {
+    for (i = 0; i < 25; i++) {
+        latch_write(select, value);
         short_delay();
     }
 }
 
 void main(void)
 {
-    u8 key;
-    u8 digit;
-    u8 last_key = PANEL_KEY_IDLE;
-    u8 selected_digit = 1;
-    u8 tx_active = 0;
-    u8 tx_service_phase = 0;
-    u8 tx_service_divider = 0;
-
     original_startup_init_clone();
     hardware_watchdog_start();
-    panel_show_text8("PLL TX  ");
-    pll_program_candidate_digit(selected_digit);
+    panel_show_text8("PLLPROBE");
+    medium_delay();
 
     for (;;) {
-        if (!RI) {
-            if (tx_active) {
-                radio_tx_service(&tx_service_phase, &tx_service_divider);
-            }
-            short_delay();
-            continue;
-        }
+        panel_show_text8("P33 LOW ");
+        P3_3 = 0;
+        medium_delay();
 
-        RI = 0;
-        key = SBUF & 0x7F;
+        panel_show_text8("P33 HIGH");
+        P3_3 = 1;
+        medium_delay();
 
-        if (key == PANEL_KEY_ON_OFF) {
-            if (tx_active) {
-                radio_tx_stop(selected_digit);
-            }
-            radio_power_off();
-        } else if (key == PANEL_KEY_IDLE || key == PANEL_KEY_PTT_RELEASED) {
-            if (tx_active) {
-                radio_tx_stop(selected_digit);
-                tx_active = 0;
-                panel_show_pll_digit(selected_digit);
-            }
-            last_key = PANEL_KEY_IDLE;
-        } else if (key == PANEL_KEY_APPEL || key == PANEL_KEY_PTT_PRESSED) {
-            if (!tx_active) {
-                panel_show_tx_digit(selected_digit);
-                radio_tx_start(selected_digit);
-                tx_active = 1;
-                tx_service_phase = 1;
-                tx_service_divider = 5;
-            }
-            last_key = key;
-        } else {
-            digit = panel_key_to_digit(key);
-            if (digit >= 1 && digit <= 8 && key != last_key) {
-                selected_digit = digit;
-                panel_show_pll_digit(digit);
-                uart_send_panel(PANEL_IO_ANT_OFF);
-                pll_program_candidate_digit(digit);
-                last_key = key;
-            } else if (digit <= 9 && key != last_key) {
-                panel_show_key(key);
-                last_key = key;
-            } else if (digit > 9) {
-                panel_show_key(key);
-                last_key = key;
-            }
-        }
+        panel_show_text8("WR PULS");
+        pulse_wr_burst();
+        medium_delay();
 
-        short_delay();
+        panel_show_text8("CE  7E ");
+        latch_burst(0xCE, 0x7E);
+        medium_delay();
+
+        panel_show_text8("8E  1E ");
+        latch_burst(0x8E, 0x1E);
+        medium_delay();
+
+        panel_show_text8("8E  8E ");
+        latch_burst(0x8E, 0x8E);
+        medium_delay();
+
+        panel_show_text8("CE  7E ");
+        latch_burst(0xCE, 0x7E);
+        medium_delay();
+
+        panel_show_text8("TX  FE ");
+        latch_burst(0xEE, 0x7E);
+        latch_burst(0x5E, 0xFE);
+        medium_delay();
+
+        panel_show_text8("RX  0E ");
+        latch_burst(0xEE, 0x7E);
+        latch_burst(0x5E, 0x0E);
+        medium_delay();
     }
 }

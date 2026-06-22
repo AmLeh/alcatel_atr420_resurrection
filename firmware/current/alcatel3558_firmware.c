@@ -2,6 +2,9 @@ typedef unsigned char u8;
 typedef unsigned int u16;
 
 #define PANEL_KEY_ON_OFF 0x60
+#define PANEL_KEY_PTT_PRESSED 0x2E
+#define PANEL_KEY_PTT_RELEASED 0x2D
+#define PANEL_KEY_APPEL 0x04
 
 #define PANEL_KEY_0 0x00
 #define PANEL_KEY_1 0x06
@@ -543,6 +546,11 @@ void main(void)
 
         RI = 0;
         key = SBUF & 0x7F;
+
+        /* APPEL is a second physical PTT control in every firmware variant. */
+        if (key == PANEL_KEY_APPEL) {
+            key = PANEL_KEY_PTT_PRESSED;
+        }
 
         if (key == PANEL_KEY_ON_OFF) {
             radio_power_off();

@@ -203,3 +203,24 @@ dummy_movx_write(); /* pulse /WR on P3.6, the PLL clock */
 ```
 
 and a small 8243 helper for the `P43` enable/load line.
+
+## Relation to PTT/RX-TX state
+
+PTT press/release handling does not directly shift the PLL word. It normally
+sets RF state flags first, then the common dispatcher applies the current RF
+state when one-shot flag `25h.2` reaches `L4FD9`.
+
+Important links:
+
+- `L468A` is the TX request/display marker. Its fallback path sets `25h.2` and
+  `2Ch.7`, which causes `L4FD9` to use the `1Bh/1Ch` digit pair.
+- `L4648` is the RX/return marker. It clears `2Ch.7`, sets `25h.2`, and queues
+  panel operation `16h`.
+- `L459D` and `L45B3` set `25h.6`, initialize RF timing bytes `60h/61h/4Eh`,
+  and call `L5964`.
+- `L5977` clears `20h.0` and `25h.6`, which is the compact TX/RF-disable
+  primitive.
+
+So for replacement firmware, keep PLL programming (`L4FD9/L50B3`) separate from
+PTT state changes. PTT should first select TX or RX hardware state, then call a
+PLL apply routine when the selected state or channel requires a new divider.

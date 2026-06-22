@@ -5,7 +5,10 @@ typedef unsigned int u16;
 #define PANEL_KEY_IDLE 0x2F
 #define PANEL_KEY_PTT_PRESSED 0x2E
 #define PANEL_KEY_PTT_RELEASED 0x2D
+#define PANEL_KEY_STAR 0x01
+#define PANEL_KEY_HASH 0x02
 #define PANEL_KEY_APPEL 0x04
+#define PANEL_KEY_DIVA 0x0A
 
 #define PANEL_KEY_0 0x00
 #define PANEL_KEY_1 0x06
@@ -29,6 +32,16 @@ typedef unsigned int u16;
 #define PANEL_IO_ANT_ORANGE_ON_B 0x68
 #define PANEL_IO_ANT_GREEN_ON 0x69
 
+#define FREQUENCY_MIN_MHZ 144U
+#define FREQUENCY_MAX_MHZ 146U
+#define FREQUENCY_MAX_STEPS 160U
+#define FREQUENCY_INITIAL_STEPS 126U
+#define REPEATER_SHIFT_STEPS 48U
+#define PLL_TX_BASE_QUOTIENT 11520U
+#define PLL_RX_BASE_QUOTIENT 13232U
+#define PLL_PRESCALER 40U
+#define UART_RX_QUEUE_SIZE 8U
+
 __sfr __at(0x80) P0;
 __sfr __at(0x87) PCON;
 __sfr __at(0x88) TCON;
@@ -51,6 +64,7 @@ __sbit __at(0x91) P1_1;
 __sbit __at(0x98) RI;
 __sbit __at(0x99) TI;
 __sbit __at(0xA9) ET0;
+__sbit __at(0xAC) ES;
 __sbit __at(0xAF) EA;
 __sbit __at(0xB0) P3_0;
 __sbit __at(0xB2) P3_2;
@@ -62,6 +76,10 @@ __sbit __at(0xB5) P3_5;
 static volatile u8 hardware_watchdog_divider;
 static volatile u8 hardware_p32_divider;
 static volatile u8 io8243_busy;
+static volatile u8 uart_rx_queue[UART_RX_QUEUE_SIZE];
+static volatile u8 uart_rx_head;
+static volatile u8 uart_rx_tail;
+static volatile u8 uart_tx_done;
 
 static void tiny_delay(void)
 {
@@ -87,10 +105,10 @@ static void hardware_watchdog_service(void)
         return;
     }
 
-    P1_0 = !P1_0;
+    /* The external reset timer must see a HIGH on 8031 pin 1 at least once/s. */
+    P1_0 = 1;
     P3_0 = 1;
     SCON |= 0x10;
-    P1_0 = !P1_0;
 }
 
 void timer0_isr(void) __interrupt(1) __using(1)
@@ -116,13 +134,37 @@ void timer0_isr(void) __interrupt(1) __using(1)
     }
 }
 
+void serial_isr(void) __interrupt(4) __using(2)
+{
+    u8 next;
+
+    if (RI) {
+        RI = 0;
+        next = (uart_rx_head + 1U) & (UART_RX_QUEUE_SIZE - 1U);
+        if (next != uart_rx_tail) {
+            uart_rx_queue[uart_rx_head] = SBUF & 0x7F;
+            uart_rx_head = next;
+        }
+    }
+
+    if (TI) {
+        TI = 0;
+        uart_tx_done = 1;
+    }
+}
+
 static void hardware_watchdog_start(void)
 {
     hardware_p32_divider = 6;
     hardware_watchdog_divider = 50;
+    uart_rx_head = 0;
+    uart_rx_tail = 0;
+    uart_tx_done = 0;
     TF0 = 0;
     ET0 = 1;
+    ES = 1;
     EA = 1;
+    hardware_watchdog_service();
 }
 
 static void latch_write(u8 select, u8 value)
@@ -139,6 +181,7 @@ static void latch_write(u8 select, u8 value)
     tiny_delay();
     P3_5 = 1;
     tiny_delay();
+    P1_0 = 1;
     io8243_busy = 0;
     EA = old_ea;
 }
@@ -156,6 +199,7 @@ static u8 latch_read_nibble(u8 select)
     P1 |= 0xF0;
     value = (P1 >> 4) & 0x0F;
     P3_5 = 1;
+    P1_0 = 1;
     io8243_busy = 0;
     EA = old_ea;
     return value;
@@ -190,117 +234,65 @@ static void pll_original_postload_candidate(void)
     latch_write(0xCE, 0x7E);
 }
 
-static void pll_shift_candidate_word(u8 r4, u8 r3, u8 r2, u8 mode_bit)
+/* ATRV5E SYN_JOB: SW1, SW2, N9..N0, A6..A0 (19 bits, MSB first). */
+static void pll_shift_atrv5e_word(u16 n_divider, u8 a_divider, u8 transmit)
 {
     u8 i;
 
     P2 = 0x00;
 
-    if (mode_bit) {
+    if (transmit) {
         pll_send_bit(1);
-        pll_send_bit(0);
+        pll_send_bit(1);
     } else {
         pll_send_bit(0);
         pll_send_bit(0);
     }
 
-    pll_send_bit((r4 >> 1) & 1);
-    pll_send_bit(r4 & 1);
-
-    for (i = 0; i < 8; i++) {
-        pll_send_bit((r3 & 0x80) != 0);
-        r3 <<= 1;
+    for (i = 0; i < 10; i++) {
+        pll_send_bit((n_divider & 0x0200U) != 0);
+        n_divider <<= 1;
     }
 
-    for (i = 0; i < 8; i++) {
-        pll_send_bit((r2 & 0x40) != 0);
-        r2 <<= 1;
+    for (i = 0; i < 7; i++) {
+        pll_send_bit((a_divider & 0x40U) != 0);
+        a_divider <<= 1;
     }
 
     P3_3 = 0;
 }
 
-static void pll_program_candidate_digit_mode(u8 digit, u8 tx_mode)
+/*
+ * Keep the enable/load writes recovered from this station's original ROM.
+ * ATRV5E's direct P43 pulse belongs to its modified hardware and is omitted.
+ */
+static u8 pll_program_channel(u16 frequency_steps, u8 transmit,
+                              u8 repeater_mode)
 {
-    u8 r4;
-    u8 r3;
-    u8 r2;
-    u16 candidate;
+    u16 quotient;
+    u16 n_divider;
+    u8 a_divider;
 
-    candidate = (u16)(0x0100 + ((u16)digit * 0x25));
-    r4 = (u8)((candidate >> 10) & 0x03);
-    r3 = (u8)((candidate >> 2) & 0xFF);
-    r2 = (u8)((candidate & 0x03) << 5);
+    if (frequency_steps > FREQUENCY_MAX_STEPS) {
+        return 0;
+    }
+
+    if (transmit) {
+        quotient = PLL_TX_BASE_QUOTIENT + frequency_steps;
+        if (repeater_mode && frequency_steps >= REPEATER_SHIFT_STEPS) {
+            quotient -= REPEATER_SHIFT_STEPS;
+        }
+    } else {
+        quotient = PLL_RX_BASE_QUOTIENT + frequency_steps;
+    }
+
+    n_divider = quotient / PLL_PRESCALER;
+    a_divider = (u8)(quotient % PLL_PRESCALER);
 
     pll_original_preload_candidate();
-    pll_shift_candidate_word(r4, r3, r2, tx_mode);
+    pll_shift_atrv5e_word(n_divider, a_divider, transmit);
     pll_original_postload_candidate();
-}
-
-static void pll_program_candidate_digit(u8 digit)
-{
-    pll_program_candidate_digit_mode(digit, 0);
-}
-
-static void uart_send_panel(u8 value);
-
-static void radio_tx_rf_enable_candidate(void)
-{
-    /* Original L5964: RF/microphone latch candidate. */
-    latch_write(0xEE, 0x7E);
-    latch_write(0x5E, 0xFE);
-}
-
-static void radio_tx_rf_timer_latch_a(void)
-{
-    /* Original L4DE5 branch when 20h.0 is clear and 2Ah.7 is set. */
-    latch_write(0x8E, 0x1E);
-}
-
-static void radio_tx_rf_timer_latch_b(void)
-{
-    /* Original L4DE5 branch when 20h.0 is set and 2Ah.7 is set. */
-    latch_write(0xCE, 0xEE);
-}
-
-static void radio_tx_rf_disable_candidate(void)
-{
-    /* Original L5937 path: same select as L5964, but with RF/mic bit cleared. */
-    latch_write(0xEE, 0x7E);
-    latch_write(0x5E, 0x0E);
-}
-
-static void radio_tx_start(u8 digit)
-{
-    uart_send_panel(PANEL_IO_ANT_ORANGE_ON_B);
-    pll_program_candidate_digit_mode(digit, 1);
-    radio_tx_rf_enable_candidate();
-    radio_tx_rf_timer_latch_a();
-}
-
-static void radio_tx_stop(u8 digit)
-{
-    radio_tx_rf_timer_latch_b();
-    radio_tx_rf_disable_candidate();
-    pll_program_candidate_digit_mode(digit, 0);
-    uart_send_panel(PANEL_IO_ANT_OFF);
-}
-
-static void radio_tx_service(u8 *phase, u8 *divider)
-{
-    if (*divider != 0) {
-        (*divider)--;
-        return;
-    }
-
-    *divider = 5;
-    if (*phase) {
-        radio_tx_rf_timer_latch_b();
-        *phase = 0;
-    } else {
-        radio_tx_rf_timer_latch_a();
-        *phase = 1;
-    }
+    return 1;
 }
 
 static u8 panel_key_to_digit(u8 key)
@@ -543,11 +535,24 @@ static void uart_send_panel(u8 value)
     parity ^= parity >> 2;
     parity ^= parity >> 1;
 
-    TI = 0;
+    uart_tx_done = 0;
     SBUF = data | ((parity & 1) ? 0x80 : 0x00);
-    while (!TI) {
+    while (!uart_tx_done) {
     }
-    TI = 0;
+}
+
+static u8 uart_receive_panel(void)
+{
+    u8 value;
+
+    while (uart_rx_head == uart_rx_tail) {
+    }
+
+    EA = 0;
+    value = uart_rx_queue[uart_rx_tail];
+    uart_rx_tail = (uart_rx_tail + 1U) & (UART_RX_QUEUE_SIZE - 1U);
+    EA = 1;
+    return value;
 }
 
 static void panel_send_codes(u8 c0, u8 c1, u8 c2, u8 c3,
@@ -573,27 +578,80 @@ static void panel_show_text8(const char *text)
         display_code(text[6]), display_code(text[7]));
 }
 
+static void panel_show_frequency(u16 frequency_steps)
+{
+    char text[8];
+    u16 offset_100hz = frequency_steps * 125U;
+    u16 mhz = FREQUENCY_MIN_MHZ + offset_100hz / 10000U;
+    u16 fraction = offset_100hz % 10000U;
+
+    text[0] = (char)('0' + mhz / 100U);
+    text[1] = (char)('0' + (mhz / 10U) % 10U);
+    text[2] = (char)('0' + mhz % 10U);
+    text[3] = '.';
+    text[4] = (char)('0' + fraction / 1000U);
+    text[5] = (char)('0' + (fraction / 100U) % 10U);
+    text[6] = (char)('0' + (fraction / 10U) % 10U);
+    text[7] = (char)('0' + fraction % 10U);
+    panel_show_text8(text);
+}
+
+static void panel_show_entry(const u8 *entry, u8 digits)
+{
+    char text[8] = {'_', '_', '_', '.', '_', '_', '_', '_'};
+    u8 positions[7] = {0, 1, 2, 4, 5, 6, 7};
+    u8 i;
+
+    for (i = 0; i < digits; i++) {
+        text[positions[i]] = (char)('0' + entry[i]);
+    }
+    panel_show_text8(text);
+}
+
+static u8 frequency_entry_to_steps(const u8 *entry, u16 *frequency_steps)
+{
+    u16 mhz = entry[0] * 100U + entry[1] * 10U + entry[2];
+    u16 fraction = entry[3] * 1000U + entry[4] * 100U +
+                   entry[5] * 10U + entry[6];
+    u16 offset_100hz;
+
+    if (mhz < FREQUENCY_MIN_MHZ || mhz > FREQUENCY_MAX_MHZ) {
+        return 0;
+    }
+
+    offset_100hz = (mhz - FREQUENCY_MIN_MHZ) * 10000U + fraction;
+    if (offset_100hz > 20000U || (offset_100hz % 125U) != 0) {
+        return 0;
+    }
+
+    *frequency_steps = offset_100hz / 125U;
+    return 1;
+}
+
+static void radio_enter_receive(u16 frequency_steps)
+{
+    (void)pll_program_channel(frequency_steps, 0, 0);
+    uart_send_panel(PANEL_IO_ANT_GREEN_ON);
+    panel_show_frequency(frequency_steps);
+}
+
+static void radio_enter_transmit(u16 frequency_steps, u8 repeater_mode)
+{
+    u16 tx_frequency_steps = frequency_steps;
+
+    if (repeater_mode && frequency_steps >= REPEATER_SHIFT_STEPS) {
+        tx_frequency_steps -= REPEATER_SHIFT_STEPS;
+    }
+    (void)pll_program_channel(frequency_steps, 1, repeater_mode);
+    uart_send_panel(PANEL_IO_ANT_ORANGE_ON_B);
+    panel_show_frequency(tx_frequency_steps);
+}
+
 static void panel_show_key(u8 key)
 {
     panel_send_codes(
         display_code('K'), display_code('E'), display_code('Y'), display_code(' '),
         display_code(hex_digit(key >> 4)), display_code(hex_digit(key)),
-        display_code(' '), display_code(' '));
-}
-
-static void panel_show_pll_digit(u8 digit)
-{
-    panel_send_codes(
-        display_code('P'), display_code('L'), display_code('L'), display_code(' '),
-        display_code('0' + digit), display_code(' '),
-        display_code(' '), display_code(' '));
-}
-
-static void panel_show_tx_digit(u8 digit)
-{
-    panel_send_codes(
-        display_code('T'), display_code('X'), display_code(' '), display_code(' '),
-        display_code('0' + digit), display_code(' '),
         display_code(' '), display_code(' '));
 }
 
@@ -619,65 +677,91 @@ void main(void)
 {
     u8 key;
     u8 digit;
+    u8 entry[7];
     u8 last_key = PANEL_KEY_IDLE;
-    u8 selected_digit = 1;
+    u8 entry_digits = 0;
+    u8 repeater_mode = 0;
     u8 tx_active = 0;
-    u8 tx_service_phase = 0;
-    u8 tx_service_divider = 0;
+    u8 tx_from_appel = 0;
+    u16 frequency_steps = FREQUENCY_INITIAL_STEPS;
 
+    /* Start satisfying the external reset timer before lengthy init work. */
+    P1_0 = 1;
     original_startup_init_clone();
     hardware_watchdog_start();
-    panel_show_text8("PLL TX  ");
-    pll_program_candidate_digit(selected_digit);
+    (void)pll_program_channel(frequency_steps, 0, 0);
+    panel_show_frequency(frequency_steps);
 
     for (;;) {
-        if (!RI) {
-            if (tx_active) {
-                radio_tx_service(&tx_service_phase, &tx_service_divider);
-            }
-            short_delay();
-            continue;
-        }
-
-        RI = 0;
-        key = SBUF & 0x7F;
+        key = uart_receive_panel();
 
         if (key == PANEL_KEY_ON_OFF) {
-            if (tx_active) {
-                radio_tx_stop(selected_digit);
-            }
             radio_power_off();
-        } else if (key == PANEL_KEY_IDLE || key == PANEL_KEY_PTT_RELEASED) {
-            if (tx_active) {
-                radio_tx_stop(selected_digit);
+        } else if (key == PANEL_KEY_IDLE) {
+            if (tx_active && tx_from_appel) {
+                radio_enter_receive(frequency_steps);
                 tx_active = 0;
-                panel_show_pll_digit(selected_digit);
+                tx_from_appel = 0;
             }
             last_key = PANEL_KEY_IDLE;
-        } else if (key == PANEL_KEY_APPEL || key == PANEL_KEY_PTT_PRESSED) {
+        } else if (key == PANEL_KEY_PTT_RELEASED) {
+            /* The panel also emits 2Dh after ordinary keys on some revisions. */
+            if (tx_active) {
+                radio_enter_receive(frequency_steps);
+                tx_active = 0;
+                tx_from_appel = 0;
+            }
+            last_key = PANEL_KEY_IDLE;
+        } else if (key == PANEL_KEY_PTT_PRESSED || key == PANEL_KEY_APPEL) {
             if (!tx_active) {
-                panel_show_tx_digit(selected_digit);
-                radio_tx_start(selected_digit);
+                radio_enter_transmit(frequency_steps, repeater_mode);
                 tx_active = 1;
-                tx_service_phase = 1;
-                tx_service_divider = 5;
+                tx_from_appel = (key == PANEL_KEY_APPEL);
             }
             last_key = key;
-        } else {
+        } else if (key != last_key) {
             digit = panel_key_to_digit(key);
-            if (digit >= 1 && digit <= 8 && key != last_key) {
-                selected_digit = digit;
-                panel_show_pll_digit(digit);
-                uart_send_panel(PANEL_IO_ANT_OFF);
-                pll_program_candidate_digit(digit);
-                last_key = key;
-            } else if (digit <= 9 && key != last_key) {
-                panel_show_key(key);
-                last_key = key;
-            } else if (digit > 9) {
-                panel_show_key(key);
-                last_key = key;
+            if (digit != 0xFF) {
+                if (entry_digits == 7) {
+                    entry_digits = 0;
+                }
+                entry[entry_digits] = digit;
+                entry_digits++;
+                panel_show_entry(entry, entry_digits);
+
+                if (entry_digits == 7) {
+                    if (frequency_entry_to_steps(entry, &frequency_steps)) {
+                        (void)pll_program_channel(frequency_steps, 0, 0);
+                        panel_show_frequency(frequency_steps);
+                    } else {
+                        panel_show_text8("BAD FREQ");
+                    }
+                    entry_digits = 0;
+                }
+            } else if (key == PANEL_KEY_STAR) {
+                entry_digits = 0;
+                if (frequency_steps != 0) {
+                    frequency_steps--;
+                } else {
+                    frequency_steps = FREQUENCY_MAX_STEPS;
+                }
+                (void)pll_program_channel(frequency_steps, 0, 0);
+                panel_show_frequency(frequency_steps);
+            } else if (key == PANEL_KEY_HASH) {
+                entry_digits = 0;
+                if (frequency_steps < FREQUENCY_MAX_STEPS) {
+                    frequency_steps++;
+                } else {
+                    frequency_steps = 0;
+                }
+                (void)pll_program_channel(frequency_steps, 0, 0);
+                panel_show_frequency(frequency_steps);
+            } else if (key == PANEL_KEY_DIVA) {
+                repeater_mode = !repeater_mode;
+                entry_digits = 0;
+                panel_show_text8(repeater_mode ? "RPT -600" : "SIMPLEX ");
             }
+            last_key = key;
         }
 
         short_delay();

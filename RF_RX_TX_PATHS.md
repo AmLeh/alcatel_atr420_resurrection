@@ -148,6 +148,230 @@ L4DE5:
 This is a strong RF/TX timing candidate. It toggles latch writes after the TX
 setup routine has enabled `25h.6`.
 
+## Tangenta/PTT panel codes
+
+Newly observed incoming panel-key codes:
+
+| Key event | Incoming code |
+| --- | ---: |
+| Tangenta/PTT pressed | `2Eh` |
+| Tangenta/PTT released | `2Dh` |
+
+These values are not handled by a direct `CJNE ...,#2Eh` / `CJNE ...,#2Dh`
+branch in the main key handler. Instead, the received panel byte is stored as a
+generic key/event code.
+
+The first important path is the panel receive/key normalization routine:
+
+```asm
+L56D8:
+56D8: EB        MOV A,R3
+56D9: B4 60 13  CJNE A,#60h,L56EF
+...
+L56EF:
+56EF: B4 2F 03  CJNE A,#2Fh,L56F5
+56F2: 02 57 24  LJMP L5724
+...
+L5717:
+5717: 20 2E 0A  JB 25h.6,L5724
+571A: 75 54 02  MOV 54h,#02h
+571D: D2 33     SETB 26h.3
+571F: 12 59 64  LCALL L5964
+5722: D2 4B     SETB 29h.3
+L5724:
+5724: 8B 7B     MOV 7Bh,R3
+5726: D2 24     SETB 24h.4
+```
+
+For both `2Eh` and `2Dh`, the code reaches `L5717` unless TX/RF flag
+`25h.6` is already set. The routine then:
+
+- arms timer/counter `54h = 02h`;
+- sets delayed flag `26h.3`;
+- calls `L5964`, the RF/microphone/latch candidate;
+- sets `29h.3`;
+- stores the raw key code in `7Bh`;
+- raises key-event flag `24h.4`.
+
+The dispatcher consumes `24h.4` here:
+
+```asm
+L58C4:
+58C4: 20 5B 03  JB 2Bh.3,L58CA
+58C7: 02 3C 5E  LJMP L3C5E
+```
+
+`L3C5E` is a state-dependent key dispatcher. In the states checked so far,
+`2Eh` and `2Dh` are not special-cased; they fall through the generic path while
+the RF preparation from `L5717/L5964` has already happened.
+
+The delayed service path later cancels the RF prep unless another state keeps it
+alive:
+
+```asm
+L4EE1:
+4EE1: 30 33 1C  JNB 26h.3,L4F00
+4EE4: D5 54 19  DJNZ 54h,L4F00
+4EE7: 20 4B 02  JB 29h.3,L4EEC
+4EEA: C2 2E     CLR 25h.6
+L4EEC:
+4EEC: C2 4B     CLR 29h.3
+4EEE: C2 00     CLR 20h.0
+4EF0: C2 33     CLR 26h.3
+4EF2: E5 64     MOV A,64h
+4EF4: B4 03 03  CJNE A,#03h,L4EFA
+4EFD: 12 59 31  LCALL L5931
+```
+
+Working interpretation:
+
+- `2Eh`/`2Dh` are panel-side PTT events, but the original firmware does not seem
+  to branch on those literal values at the first key-handler level.
+- The common non-idle key path wakes RF latch logic through `L5964`.
+- Actual transition to stable TX is probably caused by the later state machine
+  setting flags such as `20h.7`, which reaches `L468A` and `L459D/L45B3`.
+- Release/return-to-RX is probably represented by the RX event flags that reach
+  `L4648`, `L4600`, `L477E`, `L5977`, and ANT-off/ANT-green panel commands.
+
+## Deeper PTT/RF state trace
+
+The next layer down shows that PTT handling is split into three independent
+mechanisms:
+
+1. A front-end panel/key event stores the raw code in `7Bh`.
+2. RX/TX state-machine flags choose TX indication, RX indication, or return to
+   idle.
+3. A separate `25h.2` hardware event applies the current RF/PLL state through
+   `L4FD9`.
+
+### TX request path
+
+Many state-machine states handle a one-shot flag `20h.7` as "request TX":
+
+```asm
+L18D2:
+18D2: 10 07 19  JBC 20h.7,L18EE
+...
+L18EE:
+18EE: 12 46 8A  LCALL L468A
+18F1: 12 45 9D  LCALL L459D
+```
+
+`L468A` is the high-level TX marker. If `28h.7` is set, it queues panel op
+`0Fh`, which later sends `68h` (`ANT orange on`). If `28h.7` is not set, it
+does not show orange yet and instead schedules a hardware apply:
+
+```asm
+L468A:
+468A: 30 47 0E  JNB 28h.7,L469B
+L468D:
+468D: 75 4A 10  MOV 4Ah,#10h
+4690: D2 1F     SETB 23h.7
+4695: 79 0F     MOV R1,#0Fh
+4697: 12 03 4F  LCALL L034F
+...
+L469B:
+469B: D2 2A     SETB 25h.2
+469D: D2 67     SETB 2Ch.7
+```
+
+`L459D` is a short TX/RF enable candidate:
+
+```asm
+L459D:
+459D: 20 50 12  JB 2Ah.0,L45B2
+45A0: C2 33     CLR 26h.3
+45A2: C2 4B     CLR 29h.3
+45A4: D2 2E     SETB 25h.6
+45A6: 75 60 05  MOV 60h,#05h
+45A9: 75 61 05  MOV 61h,#05h
+45AC: 85 60 4E  MOV 4Eh,60h
+45AF: 12 59 64  LCALL L5964
+```
+
+So a stable TX request appears to be:
+
+```text
+20h.7 event
+  -> L468A/L468D: show or schedule TX, panel ANT orange path
+  -> L459D/L5964: enable RF/mic latch state and start 25h.6 timing
+  -> often 25h.2: apply PLL/RF state through L4FD9
+```
+
+### RX / return path
+
+The common return-to-RX indicator is one-shot flag `21h.1`:
+
+```asm
+L18D2:
+18D8: 10 09 24  JBC 21h.1,L18FF
+...
+L18FF:
+18FF: 12 46 48  LCALL L4648
+1902: 75 64 02  MOV 64h,#02h
+```
+
+`L4648` queues panel op `16h`, which sends `60h` (`ANT off`) and may then send
+`69h` (`ANT green on`) if RX is allowed:
+
+```asm
+L4648:
+4648: C2 67     CLR 2Ch.7
+464A: D2 2A     SETB 25h.2
+464C: 79 16     MOV R1,#16h
+464E: 12 03 4F  LCALL L034F
+```
+
+The return-to-RX path usually pairs this with `L5977` or `L477E`:
+
+```asm
+L477E:
+477E: 12 59 77  LCALL L5977
+4781: C2 38     CLR 27h.0
+4783: C2 31     CLR 26h.1
+...
+L5977:
+5977: C2 00     CLR 20h.0
+5979: C2 2E     CLR 25h.6
+```
+
+### PLL application is separate from PTT
+
+`25h.2` is the hardware/PLL apply event. It is set by both TX and RX paths:
+
+- `L469B` after TX request when `28h.7` is not already active.
+- `L464A` on RX/return-to-RX.
+- `L4982` after channel/current `7Ch` is updated.
+- many mode/state transitions around `L16xx..L2Bxx`.
+
+The dispatcher sends `25h.2` here:
+
+```asm
+L58BE:
+58BE: 02 32 71  LJMP L3271
+L58C1:
+58C1: 02 4F D9  LJMP L4FD9
+```
+
+The useful target for a C rewrite is therefore:
+
+```c
+ptt_pressed:
+    tx_indicator_or_state_request();   /* L468A/L468D */
+    tx_rf_enable_candidate();          /* L459D/L5964 */
+    pll_apply_current_channel();       /* L4FD9/L50B3 if needed */
+
+ptt_released:
+    tx_rf_disable_candidate();         /* L5977/L477E */
+    rx_indicator_or_state_request();   /* L4648/L4600 */
+    pll_apply_current_channel();       /* L4FD9/L50B3 if needed */
+```
+
+This split explains why `2Eh`/`2Dh` are hard to follow by literal key-code
+search: they enter the common event system, while RF effects are controlled by
+flags (`20h.7`, `21h.1`, `25h.2`, `25h.6`, `2Ch.7`) and not by repeated raw
+comparisons against `2Eh` or `2Dh`.
+
 ## RX / ANT green path
 
 The cleanest RX/status marker is operation `16h`.

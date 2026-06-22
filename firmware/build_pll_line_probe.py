@@ -4,14 +4,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 FIRMWARE_DIR = Path(__file__).resolve().parent
-BUILD_DIR = FIRMWARE_DIR / "build" / "pll_digit_probe"
+BUILD_DIR = FIRMWARE_DIR / "build" / "pll_line_probe"
 
 SDCC = ROOT / "compilers" / "sdcc" / "bin" / "sdcc.exe"
 PACKIHX = ROOT / "compilers" / "sdcc" / "bin" / "packihx.exe"
-SOURCE_C = FIRMWARE_DIR / "tests" / "pll_digit_probe.c"
-BASE = BUILD_DIR / "pll_digit_probe"
+SOURCE_C = FIRMWARE_DIR / "tests" / "pll_line_probe.c"
+BASE = BUILD_DIR / "pll_line_probe"
 IHX = BASE.with_suffix(".ihx")
-OUT_HEX = FIRMWARE_DIR / "build" / "PLL_DIGIT_PROBE.HEX"
+OUT_HEX = FIRMWARE_DIR / "build" / "PLL_LINE_PROBE.HEX"
 
 
 def main():
@@ -42,7 +42,7 @@ def main():
 
     print(f"Built: {OUT_HEX}")
     print(f"Source: {SOURCE_C}")
-    print("Behavior: keys 1..8 select PLL candidate; APPEL/PTT enables TX, release disables TX")
+    print("Behavior: repeated slow PLL line probe: P3.3, MOVX /WR, CE/8E/5E latch bursts")
 
 
 if __name__ == "__main__":
