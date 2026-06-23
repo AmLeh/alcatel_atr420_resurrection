@@ -493,13 +493,26 @@ changes, and they write external latch states through `P1` + `P3.5` (`L03CC`).
 
 New schematic/continuity clue:
 
-- `MN13` 8243 pin `5` / `P43` drives MC145156 PLL `EN`.
-- `MN13` 8243 pin `4` controls microphone enable, likely `P42` if the adjacent
-  8243 port pin mapping is confirmed.
-- Therefore TX enable is probably split across the same `MN13` writes: one bit
-  for PLL load/control and one bit for microphone/audio path enable.
+- `MN13` Port4.0 drives `OPE`, the RF power/amplifier enable.
+- `MN13` Port4.2 drives `BLM`, the microphone/audio-to-VCO gate.
+- `MN13` Port4.3 drives MC145156 PLL `ENR`.
+- `MN13` Port7.0 is `STN_V`, PLL lock status.
+- `MN13` Port7.1 is `ALT_T`, the active-low PTT/accessory TX request.
+- `MN13` Port7.3 is `DP`, carrier detect.
+- Therefore TX enable is split across the same `MN13` writes: PLL load/control,
+  RF enable, and microphone/audio gate are distinct bits and should be sequenced
+  deliberately.
 - When comparing RX and TX latch sequences, watch the values sent to `MN13`
   around `L5937`, `L5948`, `L5964`, and the TX path around `L4DE5..L4E0E`.
+
+Safe replacement-firmware sequence from the logic-board notes:
+
+1. TX: handle active-low `ALT_T`, program/apply the TX PLL word, wait for
+   `STN_V`, then enable `OPE`, then enable `BLM`.
+2. RX: disable `BLM`, disable `OPE`, program/apply the RX PLL word, wait for
+   `STN_V`, then open RX audio only when `DP` indicates carrier.
+3. Carrier/squelch: read `MN13` Port7 repeatedly. The base C firmware now uses
+   three reads and a majority vote before reacting to `DP`.
 
 ## Working hypotheses
 

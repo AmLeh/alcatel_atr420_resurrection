@@ -5,6 +5,9 @@
 Reverse engineering notes, tooling, and replacement firmware experiments for
 an Alcatel ATR420 radiotelephone.
 
+External ATR42x reverse-engineering reference:
+<https://blog.shibby.fr/2017/10/alcatel-atr42x-la-resurrection/>.
+
 The project goal is to understand how the original 8031/MCS-51 firmware
 controls the front panel, PLL synthesizer, RF path, and power/control logic, and
 to gradually build a clean replacement firmware.
@@ -103,7 +106,14 @@ call path and candidate C implementation strategy.
 Known `MN13` outputs:
 
 - `MN13` pin `5` / `P43`: PLL enable/load;
-- `MN13` pin `4`: microphone enable, probably adjacent `P42`.
+- `MN13` Port4.0: `OPE`, RF power/amplifier enable;
+- `MN13` Port4.2: `BLM`, microphone/audio-to-VCO gate;
+- `MN13` Port4.3: `ENR`, PLL enable/load;
+- `MN13` Port5.1..3: `BF1..BF3`, speaker-volume mux;
+- `MN13` Port6.1..3: `BBF3/BBF2/BBF1`, audio routing gates;
+- `MN13` Port7.0: `STN_V`, PLL lock status;
+- `MN13` Port7.1: `ALT_T`, active-low PTT/accessory TX request;
+- `MN13` Port7.3: `DP`, carrier detect.
 
 RX/TX state candidates are tracked in
 [`RF_RX_TX_PATHS.md`](RF_RX_TX_PATHS.md).
@@ -129,6 +139,8 @@ Important documents:
 
 - [`HARDWARE_RE.md`](HARDWARE_RE.md) - hardware reverse-engineering notes;
 - [`SCHEMA_ANALYSIS.md`](SCHEMA_ANALYSIS.md) - schematic-derived findings;
+- [`LOGIC_BOARD_FINDINGS.md`](LOGIC_BOARD_FINDINGS.md) - distilled findings
+  from Shibby's public ATR42x logic-board notes;
 - [`PLL_PROGRAMMING_PATH.md`](PLL_PROGRAMMING_PATH.md) - PLL programming path;
 - [`RF_PROBING_PLAN.md`](RF_PROBING_PLAN.md) - scope/logic-analyzer plan;
 - [`RF_RX_TX_PATHS.md`](RF_RX_TX_PATHS.md) - RX/TX firmware paths;

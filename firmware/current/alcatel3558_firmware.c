@@ -28,6 +28,38 @@ typedef unsigned int u16;
 #define PANEL_IO_ANT_ORANGE_ON_B 0x68
 #define PANEL_IO_ANT_GREEN_ON 0x69
 
+#define IO8243_CMD_READ 0x00
+#define IO8243_CMD_WRITE 0x01
+#define IO8243_CMD_OR 0x02
+#define IO8243_CMD_AND 0x03
+
+#define IO8243_PORT4 0x00
+#define IO8243_PORT5 0x01
+#define IO8243_PORT6 0x02
+#define IO8243_PORT7 0x03
+
+#define MN13_SUFFIX 0x0E
+#define MN13_SELECT(cmd, port) \
+    ((u8)((((cmd) & 0x03) << 6) | (((port) & 0x03) << 4) | MN13_SUFFIX))
+#define MN13_VALUE(nibble) ((u8)((((nibble) & 0x0F) << 4) | MN13_SUFFIX))
+
+#define MN13_P4_OPE 0x01
+#define MN13_P4_BLM 0x04
+#define MN13_P4_ENR 0x08
+
+#define MN13_P5_BF1 0x02
+#define MN13_P5_BF2 0x04
+#define MN13_P5_BF3 0x08
+
+#define MN13_P6_BBF3 0x02
+#define MN13_P6_BBF2 0x04
+#define MN13_P6_BBF1 0x08
+
+#define MN13_P7_STN_V 0x01
+#define MN13_P7_ALT_T 0x02
+#define MN13_P7_INFO_EM 0x04
+#define MN13_P7_DP 0x08
+
 __sfr __at(0x80) P0;
 __sfr __at(0x87) PCON;
 __sfr __at(0x88) TCON;
@@ -160,6 +192,88 @@ static u8 latch_read_nibble(u8 select)
     return value;
 }
 
+static void mn13_write_port(u8 port, u8 value)
+{
+    latch_write(MN13_SELECT(IO8243_CMD_WRITE, port), MN13_VALUE(value));
+}
+
+static void mn13_or_port(u8 port, u8 mask)
+{
+    latch_write(MN13_SELECT(IO8243_CMD_OR, port), MN13_VALUE(mask));
+}
+
+static void mn13_and_port(u8 port, u8 mask)
+{
+    latch_write(MN13_SELECT(IO8243_CMD_AND, port), MN13_VALUE(mask));
+}
+
+static u8 mn13_read_port(u8 port)
+{
+    return latch_read_nibble(MN13_SELECT(IO8243_CMD_READ, port));
+}
+
+static u8 mn13_read_port7_stable(void)
+{
+    u8 a;
+    u8 b;
+    u8 c;
+
+    a = mn13_read_port(IO8243_PORT7);
+    b = mn13_read_port(IO8243_PORT7);
+    c = mn13_read_port(IO8243_PORT7);
+
+    return (a & b) | (a & c) | (b & c);
+}
+
+static void mn13_set_speaker_volume(u8 level)
+{
+    static const u8 volume_bits[7] = {
+        0,
+        MN13_P5_BF1,
+        MN13_P5_BF2,
+        MN13_P5_BF1 | MN13_P5_BF2,
+        MN13_P5_BF3,
+        MN13_P5_BF3 | MN13_P5_BF1,
+        MN13_P5_BF3 | MN13_P5_BF2
+    };
+
+    if (level > 6) {
+        level = 6;
+    }
+
+    mn13_write_port(IO8243_PORT5, volume_bits[level]);
+}
+
+static void radio_rx_audio_open(u8 speaker_volume)
+{
+    mn13_or_port(IO8243_PORT6, MN13_P6_BBF1 | MN13_P6_BBF2);
+    mn13_set_speaker_volume(speaker_volume);
+}
+
+static void radio_rx_audio_mute(void)
+{
+    mn13_and_port(IO8243_PORT6, (u8)~(MN13_P6_BBF1 | MN13_P6_BBF2));
+    mn13_set_speaker_volume(0);
+}
+
+static void radio_rf_force_rx_safe(void)
+{
+    mn13_and_port(IO8243_PORT4, (u8)~MN13_P4_BLM);
+    mn13_and_port(IO8243_PORT4, (u8)~MN13_P4_OPE);
+    radio_rx_audio_mute();
+}
+
+static void pll_enr_pulse(void)
+{
+    u8 i;
+
+    mn13_or_port(IO8243_PORT4, MN13_P4_ENR);
+    for (i = 0; i < 12; i++) {
+        tiny_delay();
+    }
+    mn13_and_port(IO8243_PORT4, (u8)~MN13_P4_ENR);
+}
+
 static void pll_clock_pulse_movx(void)
 {
     __asm
@@ -179,14 +293,13 @@ static void pll_send_bit(u8 bit_value)
 
 static void pll_original_preload_candidate(void)
 {
-    latch_write(0xCE, 0x7E);
-    latch_write(0x8E, 0x1E);
+    mn13_and_port(IO8243_PORT4, (u8)~MN13_P4_ENR);
+    mn13_or_port(IO8243_PORT4, MN13_P4_OPE);
 }
 
 static void pll_original_postload_candidate(void)
 {
-    latch_write(0x8E, 0x8E);
-    latch_write(0xCE, 0x7E);
+    pll_enr_pulse();
 }
 
 static void pll_shift_candidate_word(u8 r4, u8 r3, u8 r2, u8 mode_bit)
@@ -535,13 +648,27 @@ static void radio_power_off(void)
 void main(void)
 {
     u8 key;
+    u8 rf_status;
+    u8 carrier_present = 0;
+    u8 last_carrier_present = 0xFF;
 
     original_startup_init_clone();
+    radio_rf_force_rx_safe();
     hardware_watchdog_start();
     panel_show_text8("C DEMO3 ");
 
     for (;;) {
         while (!RI) {
+            rf_status = mn13_read_port7_stable();
+            carrier_present = (rf_status & MN13_P7_DP) ? 1 : 0;
+            if (carrier_present != last_carrier_present) {
+                last_carrier_present = carrier_present;
+                if (carrier_present) {
+                    radio_rx_audio_open(3);
+                } else {
+                    radio_rx_audio_mute();
+                }
+            }
         }
 
         RI = 0;

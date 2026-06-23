@@ -22,9 +22,13 @@ watchdog-looking signal: it selects which 8243 receives the `P1.4..P1.7` +
 
 Additional RF/TX mapping on the same `MN13`:
 
-- `MN13` pin `5` / `P43` controls PLL `EN`.
-- `MN13` pin `4` controls microphone enable; it is probably the adjacent
-  `P42` output, but the confirmed fact is the physical pin `4`.
+- `MN13` Port4.0 controls `OPE`, the RF power/amplifier enable.
+- `MN13` Port4.2 controls `BLM`, the microphone/audio-to-VCO gate.
+- `MN13` Port4.3 controls PLL `ENR` / load.
+- `MN13` Port7.0 reports `STN_V`, the PLL lock-status signal.
+
+Shibby's public ATR42x logic-board notes are an external source for this map:
+<https://blog.shibby.fr/2017/10/alcatel-atr42x-la-resurrection/>.
 
 Important point: on the 8031, `P3.6` is the external-memory write strobe
 `/WR`. The firmware therefore does not use `SETB P3.6` or `CLR P3.6` for the
@@ -183,6 +187,16 @@ The four writes tightly associated with PLL programming are:
 These are the best candidates for 8243 `P43` enable/load control. The exact
 active polarity should be verified on `MN13` pin `5` and MC145156 pin `13` with
 the scope while original firmware changes channel.
+
+The ATRV5E source and Shibby's timing notes both show the post-shift load as an
+OR operation on `MN13` Port4 bit 3 followed shortly by an AND operation clearing
+that same bit. In the C firmware this is now represented as `pll_enr_pulse()`
+instead of raw `0x8E/0xCE` latch writes.
+
+Hardware-variant warning: some radio cards use an `MC145158-2` daughter PLL
+implementation instead of the `MC145156P`. The two devices require different
+firmware dialogue. A later replacement firmware should expose this as an
+explicit hardware profile rather than assuming every card is `MC145156P`.
 
 ## Next decode step
 
