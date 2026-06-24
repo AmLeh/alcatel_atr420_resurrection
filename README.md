@@ -14,7 +14,9 @@ to gradually build a clean replacement firmware.
 
 ## Current Status
 
-Working standalone C firmware has been built and tested on real hardware:
+Working standalone C firmware has been built and tested on the inspected
+station. The current base is a free-frequency firmware in
+`firmware/current/alcatel3558_firmware.c`:
 
 - boots from the external 27256 program memory;
 - initializes the front-panel controller;
@@ -23,10 +25,45 @@ Working standalone C firmware has been built and tested on real hardware:
 - controls known panel LEDs;
 - services the external reset/watchdog circuit;
 - handles the physical `ON/OFF` key;
-- has experimental PLL/RF probing firmware.
+- programs the PLL for direct frequency entry;
+- enters RX/TX state on `APPEL`/PTT, including the confirmed `CER`/`SW1`
+  command path.
 
 This is still a reverse-engineering and bring-up project. It is not yet a
-complete replacement radio firmware.
+complete replacement radio firmware: the full high-power TX path, PA enabling,
+and modulation path are still under investigation.
+
+## Hardware Scope / Important Limitation
+
+The PLL and RF findings in this repository are confirmed for the inspected
+Alcatel ATR420 / Alcatel 3558 station board only. Other ATR42x revisions may
+use different RF modules, dividers, jumpers, or option wiring.
+
+Do not blindly reuse the PLL math from this repository without checking the
+actual chips on the board. The tested board has:
+
+- PLL synthesizer: Motorola `MC145156P2`;
+- prescaler: Motorola `MC12016`, dual-modulus `40/41`;
+- PLL reference/channel step: 12.5 kHz.
+
+Earlier experiments assumed a `64/65` prescaler. That is wrong for this board
+and will program incorrect frequencies. With the confirmed `MC12016`:
+
+```text
+Ntotal = target_frequency_kHz / 12.5
+N = Ntotal / 40
+A = Ntotal % 40
+```
+
+Example:
+
+```text
+144.000 MHz -> Ntotal=11520 -> N=288, A=0
+```
+
+The older `firmware/versions/atrv5e_frequency_core` branch is kept only as a
+historical experiment. On the tested station its HEX builds did not boot
+reliably and must not be treated as the current base.
 
 ## Target Hardware
 
@@ -48,6 +85,7 @@ Main logic:
 - front-panel MCU: `IP-80C51643`;
 - display/LED driver on the panel: National Semiconductor `COP370`;
 - PLL synthesizer: Motorola `MC145156P2`.
+- PLL prescaler on the inspected RF board: Motorola `MC12016` (`40/41`).
 
 ## Major Findings
 
@@ -115,6 +153,13 @@ Known `MN13` outputs:
 - `MN13` Port7.1: `ALT_T`, active-low PTT/accessory TX request;
 - `MN13` Port7.3: `DP`, carrier detect.
 
+Audio/modulation note from schematic tracing:
+
+- `BFEM` comes from the microphone amplifier;
+- `BFETCS` comes from the external/accessory audio source;
+- these two paths are mixed before the modulation path, so they affect
+  modulation/audio injection, not the RF carrier or PA power by themselves.
+
 RX/TX state candidates are tracked in
 [`RF_RX_TX_PATHS.md`](RF_RX_TX_PATHS.md).
 
@@ -178,7 +223,8 @@ python .\firmware\build_panel_code_scan.py
 
 | Firmware | Purpose |
 | --- | --- |
-| `firmware/current/alcatel3558_firmware.c` | Current replacement firmware base |
+| `firmware/current/alcatel3558_firmware.c` | Current working free-frequency replacement firmware base |
+| `firmware/tests/free_freq_probe_working_base.c` | Preserved source of the first confirmed free-frequency working base |
 | `firmware/tests/panel_keys2.c` | Display persistent key codes |
 | `firmware/tests/panel_code_scan.c` | Send panel command bytes and identify LEDs |
 | `firmware/tests/rf_latch_probe.c` | Probe RF/RX/TX latch candidates |

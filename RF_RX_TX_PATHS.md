@@ -502,13 +502,17 @@ New schematic/continuity clue:
 - Therefore TX enable is split across the same `MN13` writes: PLL load/control,
   RF enable, and microphone/audio gate are distinct bits and should be sequenced
   deliberately.
+- `BFEM` is the microphone-amplifier audio path and `BFETCS` is the
+  external/accessory audio path; these are mixed before modulation. They are
+  modulation/audio clues, not primary PA-power clues.
 - When comparing RX and TX latch sequences, watch the values sent to `MN13`
   around `L5937`, `L5948`, `L5964`, and the TX path around `L4DE5..L4E0E`.
 
 Safe replacement-firmware sequence from the logic-board notes:
 
 1. TX: handle active-low `ALT_T`, program/apply the TX PLL word, wait for
-   `STN_V`, then enable `OPE`, then enable `BLM`.
+   `STN_V`, then enable `OPE`, then enable `BLM` for the BFEM/BFETCS
+   modulation-audio path.
 2. RX: disable `BLM`, disable `OPE`, program/apply the RX PLL word, wait for
    `STN_V`, then open RX audio only when `DP` indicates carrier.
 3. Carrier/squelch: read `MN13` Port7 repeatedly. The base C firmware now uses

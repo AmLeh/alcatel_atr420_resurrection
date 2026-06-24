@@ -53,6 +53,18 @@ low half remains the expander-select suffix.
 `INFO EM` is also present on P7.2 on some variants, but we do not currently use
 it in the base firmware.
 
+## TX audio/modulation path
+
+Schematic tracing separates RF power control from modulation audio:
+
+- `BFEM` comes from the microphone amplifier;
+- `BFETCS` comes from the external/accessory audio source;
+- the two paths are mixed before the modulation path.
+
+Therefore `BFEM`/`BFETCS` and `BLM` should be treated as audio/modulation
+controls. They are needed for modulated TX audio, but they should not be used as
+the primary explanation for a missing or weak unmodulated RF carrier.
+
 ## PLL behavior
 
 The `MC145156P` path is:
@@ -75,7 +87,7 @@ For TX:
 1. react to active-low `ALT_T`;
 2. program/apply the TX PLL word and wait for `STN_V`;
 3. enable RF with `OPE`;
-4. only then enable microphone audio with `BLM`.
+4. only then enable microphone/external TX audio with `BLM`.
 
 For RX:
 

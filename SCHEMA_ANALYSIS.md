@@ -55,9 +55,14 @@ Confirmed PLL-related devices:
 | Designator | Part | Role |
 | --- | --- | --- |
 | `MN01` | `MC145156P` | PLL synthesizer |
-| `MN02` | `MC12016-P` | prescaler |
+| `MN02` | `MC12016-P` | 40/41 dual-modulus prescaler |
 | `MN03` | `54LS09` | open-collector AND gates driving PLL control inputs |
 | `YO2` | crystal/reference oscillator network | PLL reference |
+
+Important PLL calculation consequence: because `MN02` is `MC12016-P`, the
+prescaler ratio is `40/41`, not `64/65`. With the confirmed 12.5 kHz reference
+step, manual PLL words use `Ntotal = N * 40 + A`. Thus `144.000 MHz` is
+`Ntotal=11520`, `N=288`, `A=0`.
 
 The schematic labels the MC145156P control pins directly:
 

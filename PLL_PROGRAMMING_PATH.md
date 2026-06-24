@@ -146,7 +146,23 @@ The mode bits in `XDATA 0465h` choose one of three divider transformations:
 | `L5089` | `ACC.5=1` | falls through to `L50B3` |
 
 These branches divide/mix the value using constants `40h`, `28h`, or `14h`.
-That is likely channel spacing or prescaler/reference mode handling.
+The actual prescaler fitted on the inspected RF board is `MC12016`, so the
+hardware dual-modulus ratio is `40/41`. For direct manual PLL words use:
+
+```text
+Ntotal = N * 40 + A
+PLL frequency = Ntotal * 12.5 kHz
+```
+
+Example for `144.000 MHz`:
+
+```text
+Ntotal = 144000 / 12.5 = 11520
+N = 288
+A = 0
+```
+
+The earlier `64/65` assumption was wrong for this board.
 
 ## Enable/load line candidate
 

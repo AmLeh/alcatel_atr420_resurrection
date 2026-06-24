@@ -19,8 +19,28 @@ firmware/
 
 ## Current baseline
 
+`current/alcatel3558_firmware.c` is now the main working firmware base. It is
+based on the confirmed standalone C bring-up code, but adds direct frequency
+entry and MC145156 PLL programming for the inspected radio.
+
+Current controls:
+
+- startup banner: `ATR421`;
+- default frequency: `144.0000 MHz`;
+- digit keys: enter seven frequency digits, for example `1455750`;
+- `*` / `#`: step down/up by 12.5 kHz;
+- `APPEL` / PTT: switch to TX state on the current frequency;
+- PTT/APPEL release: return to RX state;
+- `ON/OFF`: use the existing shutdown path.
+
+The matching build output is:
+
+```text
+firmware/build/ALCATEL3558_CURRENT.HEX
+```
+
 `versions/v0_c_demo3_panel_keycode` is the first confirmed standalone C
-baseline:
+baseline and is kept for reference:
 
 - boots without merging or patching the original firmware;
 - shows `C DEMO3`;
@@ -33,6 +53,27 @@ Keep this version unchanged. New work should happen in:
 ```text
 firmware/current/alcatel3558_firmware.c
 ```
+
+`versions/atrv5e_frequency_core` is not the current base. That branch was an
+experimental ATRV5E-derived port; on the tested station its HEX builds did not
+boot reliably. Keep it only as historical reference unless the hardware reason
+is found and fixed.
+
+## Hardware scope / do not generalize blindly
+
+The RF/PLL constants below are confirmed on the inspected board only. Before
+reusing this firmware on another ATR42x/Alcatel 3558 unit, check the actual PLL
+and prescaler chips on the RF board.
+
+Confirmed inspected-board parts:
+
+- PLL synthesizer: Motorola `MC145156P2`;
+- prescaler: Motorola `MC12016`;
+- dual-modulus ratio: `40/41`;
+- PLL reference/channel step: 12.5 kHz.
+
+Several early test firmwares assumed a `64/65` prescaler. That assumption is
+wrong for this station and gives wrong frequencies.
 
 ## Hardware Watchdog
 
@@ -91,6 +132,44 @@ Output:
 ```text
 firmware/build/ALCATEL3558_CURRENT.HEX
 ```
+
+## Confirmed PLL facts
+
+The inspected RF board uses:
+
+- `MC145156P2` PLL synthesizer;
+- `MC12016` dual-modulus prescaler, so `P/P+1 = 40/41`;
+- 12.5 kHz PLL reference/step.
+
+Manual PLL calculation:
+
+```text
+Ntotal = N * 40 + A
+PLL frequency = Ntotal * 12.5 kHz
+```
+
+Example:
+
+```text
+144.000 MHz -> Ntotal 11520 -> N=288, A=0
+```
+
+The MC145156 word order is:
+
+```text
+SW1, SW2, N9..N0, A6..A0
+```
+
+`SW1` is MC145156 pin 14 and has been traced to `CER`
+(`Commande Emission/Reception`), the RF/antenna switching command into the TX
+module. The MC145156 switch outputs are open-drain, so `SW1=1` releases CER to
+its external pull-up and `SW1=0` pulls it low. `SW2` is not connected on the
+inspected board. Use `SW1=0, SW2=0` for RX and `SW1=1, SW2=0` for TX.
+
+`CER` alone is not proven to enable full transmitter output power. It opens
+the antenna/RF switching chain and several transistor stages, but high-power TX
+and modulation still appear to need additional original-firmware conditions or
+analog path setup.
 
 ## Test Builds
 

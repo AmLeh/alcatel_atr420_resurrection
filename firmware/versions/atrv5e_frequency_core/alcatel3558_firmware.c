@@ -39,6 +39,7 @@ typedef unsigned int u16;
 #define REPEATER_SHIFT_STEPS 48U
 #define PLL_TX_BASE_QUOTIENT 11520U
 #define PLL_RX_BASE_QUOTIENT 13232U
+/* Hardware prescaler is MC12016, therefore dual-modulus P/P+1 = 40/41. */
 #define PLL_PRESCALER 40U
 #define UART_RX_QUEUE_SIZE 8U
 
@@ -80,6 +81,9 @@ static volatile u8 uart_rx_queue[UART_RX_QUEUE_SIZE];
 static volatile u8 uart_rx_head;
 static volatile u8 uart_rx_tail;
 static volatile u8 uart_tx_done;
+static u8 bell_lock_state = 0xFF;
+
+static void uart_send_panel(u8 value);
 
 static void tiny_delay(void)
 {
@@ -105,10 +109,17 @@ static void hardware_watchdog_service(void)
         return;
     }
 
-    /* The external reset timer must see a HIGH on 8031 pin 1 at least once/s. */
-    P1_0 = 1;
+    /*
+     * Working recovery/probe firmware showed that holding P1.0 high can keep
+     * the station from booting. Service the external reset/selection circuit
+     * with a short low-high pulse instead.
+     */
+    P1_0 = 0;
+    tiny_delay();
     P3_0 = 1;
     SCON |= 0x10;
+    P1_0 = 1;
+    tiny_delay();
 }
 
 void timer0_isr(void) __interrupt(1) __using(1)
@@ -205,6 +216,26 @@ static u8 latch_read_nibble(u8 select)
     return value;
 }
 
+static u8 rf_read_port7(void)
+{
+    return latch_read_nibble(0x3E);
+}
+
+static u8 pll_lock_present(void)
+{
+    return (rf_read_port7() & 0x01U) != 0;
+}
+
+static void panel_update_lock_bell(void)
+{
+    u8 locked = pll_lock_present();
+
+    if (locked != bell_lock_state) {
+        uart_send_panel(locked ? PANEL_IO_BELL_ON : PANEL_IO_BELL_OFF);
+        bell_lock_state = locked;
+    }
+}
+
 static void pll_clock_pulse_movx(void)
 {
     __asm
@@ -234,7 +265,13 @@ static void pll_original_postload_candidate(void)
     latch_write(0xCE, 0x7E);
 }
 
-/* ATRV5E SYN_JOB: SW1, SW2, N9..N0, A6..A0 (19 bits, MSB first). */
+/*
+ * ATRV5E SYN_JOB: SW1, SW2, N9..N0, A6..A0 (19 bits, MSB first).
+ *
+ * On this station MC145156 pin 14 / SW1 is the CER line
+ * (Commande Emission/Reception) feeding the antenna/RF switching chain.
+ * SW outputs are open-drain: bit 1 releases the line, bit 0 pulls it low.
+ */
 static void pll_shift_atrv5e_word(u16 n_divider, u8 a_divider, u8 transmit)
 {
     u8 i;
@@ -243,7 +280,7 @@ static void pll_shift_atrv5e_word(u16 n_divider, u8 a_divider, u8 transmit)
 
     if (transmit) {
         pll_send_bit(1);
-        pll_send_bit(1);
+        pll_send_bit(0);
     } else {
         pll_send_bit(0);
         pll_send_bit(0);
@@ -538,21 +575,21 @@ static void uart_send_panel(u8 value)
     uart_tx_done = 0;
     SBUF = data | ((parity & 1) ? 0x80 : 0x00);
     while (!uart_tx_done) {
+        hardware_watchdog_service();
     }
 }
 
-static u8 uart_receive_panel(void)
+static u8 uart_try_receive_panel(u8 *value)
 {
-    u8 value;
-
-    while (uart_rx_head == uart_rx_tail) {
+    if (uart_rx_head == uart_rx_tail) {
+        return 0;
     }
 
     EA = 0;
-    value = uart_rx_queue[uart_rx_tail];
+    *value = uart_rx_queue[uart_rx_tail];
     uart_rx_tail = (uart_rx_tail + 1U) & (UART_RX_QUEUE_SIZE - 1U);
     EA = 1;
-    return value;
+    return 1;
 }
 
 static void panel_send_codes(u8 c0, u8 c1, u8 c2, u8 c3,
@@ -631,6 +668,7 @@ static u8 frequency_entry_to_steps(const u8 *entry, u16 *frequency_steps)
 static void radio_enter_receive(u16 frequency_steps)
 {
     (void)pll_program_channel(frequency_steps, 0, 0);
+    panel_update_lock_bell();
     uart_send_panel(PANEL_IO_ANT_GREEN_ON);
     panel_show_frequency(frequency_steps);
 }
@@ -643,6 +681,7 @@ static void radio_enter_transmit(u16 frequency_steps, u8 repeater_mode)
         tx_frequency_steps -= REPEATER_SHIFT_STEPS;
     }
     (void)pll_program_channel(frequency_steps, 1, repeater_mode);
+    panel_update_lock_bell();
     uart_send_panel(PANEL_IO_ANT_ORANGE_ON_B);
     panel_show_frequency(tx_frequency_steps);
 }
@@ -683,6 +722,7 @@ void main(void)
     u8 repeater_mode = 0;
     u8 tx_active = 0;
     u8 tx_from_appel = 0;
+    u8 idle_lock_poll_divider = 0;
     u16 frequency_steps = FREQUENCY_INITIAL_STEPS;
 
     /* Start satisfying the external reset timer before lengthy init work. */
@@ -690,10 +730,19 @@ void main(void)
     original_startup_init_clone();
     hardware_watchdog_start();
     (void)pll_program_channel(frequency_steps, 0, 0);
+    panel_update_lock_bell();
     panel_show_frequency(frequency_steps);
 
     for (;;) {
-        key = uart_receive_panel();
+        if (!uart_try_receive_panel(&key)) {
+            hardware_watchdog_service();
+            idle_lock_poll_divider++;
+            if (idle_lock_poll_divider == 0) {
+                panel_update_lock_bell();
+            }
+            continue;
+        }
+        idle_lock_poll_divider = 0;
 
         if (key == PANEL_KEY_ON_OFF) {
             radio_power_off();
@@ -732,6 +781,7 @@ void main(void)
                 if (entry_digits == 7) {
                     if (frequency_entry_to_steps(entry, &frequency_steps)) {
                         (void)pll_program_channel(frequency_steps, 0, 0);
+                        panel_update_lock_bell();
                         panel_show_frequency(frequency_steps);
                     } else {
                         panel_show_text8("BAD FREQ");
@@ -746,6 +796,7 @@ void main(void)
                     frequency_steps = FREQUENCY_MAX_STEPS;
                 }
                 (void)pll_program_channel(frequency_steps, 0, 0);
+                panel_update_lock_bell();
                 panel_show_frequency(frequency_steps);
             } else if (key == PANEL_KEY_HASH) {
                 entry_digits = 0;
@@ -755,6 +806,7 @@ void main(void)
                     frequency_steps = 0;
                 }
                 (void)pll_program_channel(frequency_steps, 0, 0);
+                panel_update_lock_bell();
                 panel_show_frequency(frequency_steps);
             } else if (key == PANEL_KEY_DIVA) {
                 repeater_mode = !repeater_mode;
@@ -764,6 +816,5 @@ void main(void)
             last_key = key;
         }
 
-        short_delay();
     }
 }

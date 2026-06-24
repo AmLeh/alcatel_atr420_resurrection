@@ -742,9 +742,9 @@ void main(void)
 
                 entry[entry_digits] = digit;
                 entry_digits++;
+                panel_show_entry(entry, entry_digits);
 
                 if (entry_digits == 7) {
-                    panel_show_entry(entry, entry_digits);
                     if (frequency_entry_to_steps(entry, &frequency_steps)) {
                         uart_send_panel(PANEL_IO_ANT_OFF);
                         (void)pll_program_channel(frequency_steps, 0);
@@ -776,5 +776,7 @@ void main(void)
                 panel_show_key(key);
             }
         }
+
+        short_delay();
     }
 }
