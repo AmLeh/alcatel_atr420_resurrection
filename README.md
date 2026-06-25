@@ -26,12 +26,15 @@ station. The current base is a free-frequency firmware in
 - services the external reset/watchdog circuit;
 - handles the physical `ON/OFF` key;
 - programs the PLL for direct frequency entry;
+- receives on the selected frequency with confirmed RX audio gating;
+- shows carrier detect on the `BELL` indicator;
 - enters RX/TX state on `APPEL`/PTT, including the confirmed `CER`/`SW1`
   command path.
 
 This is still a reverse-engineering and bring-up project. It is not yet a
-complete replacement radio firmware: the full high-power TX path, PA enabling,
-and modulation path are still under investigation.
+complete replacement radio firmware: RX is now confirmed on the inspected
+station, but the full high-power TX path, PA enabling, and modulation path are
+still under investigation.
 
 ## Hardware Scope / Important Limitation
 
@@ -152,6 +155,15 @@ Known `MN13` outputs:
 - `MN13` Port7.0: `STN_V`, PLL lock status;
 - `MN13` Port7.1: `ALT_T`, active-low PTT/accessory TX request;
 - `MN13` Port7.3: `DP`, carrier detect.
+
+Confirmed RX behavior in the current firmware:
+
+- RX PLL is programmed with `SW1=0, SW2=0`;
+- RX audio is opened with `MN13` Port6 value `0xC` (`BBF1 + BBF2`) and
+  `MN13` Port5 value `0x8` as the current working speaker-volume setting;
+- `DP` is read from `MN13` Port7.3 using three reads and majority voting;
+- panel `BELL` follows `DP`: on means carrier present, off means no carrier;
+- panel `SPEAKER` is enabled when RX audio is opened.
 
 Audio/modulation note from schematic tracing:
 

@@ -71,6 +71,7 @@ __sbit __at(0xB5) P3_5;
 static volatile u8 hardware_watchdog_divider;
 static volatile u8 hardware_p32_divider;
 static volatile u8 io8243_busy;
+static u8 last_dp_carrier = 0xFF;
 
 static void tiny_delay(void)
 {
@@ -173,6 +174,31 @@ static u8 latch_read_nibble(u8 select)
     return value;
 }
 
+static u8 read_mn13_port7(void)
+{
+    return latch_read_nibble(0x3E);
+}
+
+static u8 read_dp_carrier_stable(void)
+{
+    u8 a = read_mn13_port7();
+    u8 b = read_mn13_port7();
+    u8 c = read_mn13_port7();
+    u8 votes = 0;
+
+    if (a & 0x08U) {
+        votes++;
+    }
+    if (b & 0x08U) {
+        votes++;
+    }
+    if (c & 0x08U) {
+        votes++;
+    }
+
+    return (votes >= 2U) ? 1U : 0U;
+}
+
 static void pll_clock_pulse_movx(void)
 {
     __asm
@@ -258,6 +284,37 @@ static u8 pll_program_channel(u16 frequency_steps, u8 tx_mode)
 
 static void uart_send_panel(u8 value);
 
+static void radio_rx_audio_open(void)
+{
+    /*
+     * Confirmed RX audio path on the inspected board:
+     * - Port6 bit2/bit3: BBF2 + BBF1, open RX audio gates.
+     * - Port5 bit3: a mid/high volume candidate recovered from the original
+     *   L5948 volume calculation for default volume value 4. This setting was
+     *   confirmed on hardware together with DP/BELL carrier indication.
+     */
+    latch_write(0x6E, 0xCE);
+    latch_write(0x5E, 0x8E);
+    uart_send_panel(PANEL_IO_SPEAKER_ON);
+}
+
+static void radio_rx_audio_close(void)
+{
+    latch_write(0x6E, 0x0E);
+    latch_write(0x5E, 0x0E);
+    uart_send_panel(PANEL_IO_SPEAKER_OFF);
+}
+
+static void radio_rx_carrier_indicator_update(u8 force)
+{
+    u8 carrier = read_dp_carrier_stable();
+
+    if (force || carrier != last_dp_carrier) {
+        last_dp_carrier = carrier;
+        uart_send_panel(carrier ? PANEL_IO_BELL_ON : PANEL_IO_BELL_OFF);
+    }
+}
+
 static void radio_tx_rf_enable_candidate(void)
 {
     /* Original L5964: RF/microphone latch candidate. */
@@ -286,6 +343,7 @@ static void radio_tx_rf_disable_candidate(void)
 
 static void radio_tx_start(u16 frequency_steps)
 {
+    radio_rx_audio_close();
     uart_send_panel(PANEL_IO_ANT_ORANGE_ON_B);
     (void)pll_program_channel(frequency_steps, 1);
     radio_tx_rf_enable_candidate();
@@ -297,7 +355,9 @@ static void radio_tx_stop(u16 frequency_steps)
     radio_tx_rf_timer_latch_b();
     radio_tx_rf_disable_candidate();
     (void)pll_program_channel(frequency_steps, 0);
-    uart_send_panel(PANEL_IO_ANT_OFF);
+    radio_rx_audio_open();
+    uart_send_panel(PANEL_IO_ANT_GREEN_ON);
+    radio_rx_carrier_indicator_update(1);
 }
 
 static void radio_tx_service(u8 *phase, u8 *divider)
@@ -700,12 +760,17 @@ void main(void)
     panel_show_text8("ATR421  ");
     startup_banner_delay();
     (void)pll_program_channel(frequency_steps, 0);
+    radio_rx_audio_open();
+    uart_send_panel(PANEL_IO_ANT_GREEN_ON);
+    radio_rx_carrier_indicator_update(1);
     panel_show_frequency(frequency_steps);
 
     for (;;) {
         if (!RI) {
             if (tx_active) {
                 radio_tx_service(&tx_service_phase, &tx_service_divider);
+            } else {
+                radio_rx_carrier_indicator_update(0);
             }
             hardware_watchdog_service();
             continue;
@@ -746,8 +811,10 @@ void main(void)
                 if (entry_digits == 7) {
                     panel_show_entry(entry, entry_digits);
                     if (frequency_entry_to_steps(entry, &frequency_steps)) {
-                        uart_send_panel(PANEL_IO_ANT_OFF);
                         (void)pll_program_channel(frequency_steps, 0);
+                        radio_rx_audio_open();
+                        uart_send_panel(PANEL_IO_ANT_GREEN_ON);
+                        radio_rx_carrier_indicator_update(1);
                         panel_show_frequency(frequency_steps);
                     } else {
                         panel_show_text8("BAD FREQ");
@@ -762,6 +829,9 @@ void main(void)
                     frequency_steps = FREQUENCY_MAX_STEPS;
                 }
                 (void)pll_program_channel(frequency_steps, 0);
+                radio_rx_audio_open();
+                uart_send_panel(PANEL_IO_ANT_GREEN_ON);
+                radio_rx_carrier_indicator_update(1);
                 panel_show_frequency(frequency_steps);
             } else if (key == PANEL_KEY_HASH) {
                 entry_digits = 0;
@@ -771,6 +841,9 @@ void main(void)
                     frequency_steps = 0;
                 }
                 (void)pll_program_channel(frequency_steps, 0);
+                radio_rx_audio_open();
+                uart_send_panel(PANEL_IO_ANT_GREEN_ON);
+                radio_rx_carrier_indicator_update(1);
                 panel_show_frequency(frequency_steps);
             } else {
                 panel_show_key(key);

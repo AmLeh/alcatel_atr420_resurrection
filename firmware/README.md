@@ -29,6 +29,8 @@ Current controls:
 - default frequency: `144.0000 MHz`;
 - digit keys: enter seven frequency digits, for example `1455750`;
 - `*` / `#`: step down/up by 12.5 kHz;
+- RX audio is enabled on the selected frequency;
+- `BELL` follows carrier detect (`DP`);
 - `APPEL` / PTT: switch to TX state on the current frequency;
 - PTT/APPEL release: return to RX state;
 - `ON/OFF`: use the existing shutdown path.
@@ -170,6 +172,30 @@ inspected board. Use `SW1=0, SW2=0` for RX and `SW1=1, SW2=0` for TX.
 the antenna/RF switching chain and several transistor stages, but high-power TX
 and modulation still appear to need additional original-firmware conditions or
 analog path setup.
+
+## Confirmed RX path
+
+RX is confirmed working on the inspected station with the current firmware.
+The relevant hardware controls are:
+
+```text
+PLL RX word: SW1=0, SW2=0
+MN13 Port6: 0xC  ; BBF1 + BBF2, open RX audio gates
+MN13 Port5: 0x8  ; working speaker-volume setting
+```
+
+The firmware reads carrier detect from `MN13` Port7 bit 3 (`DP`) three times
+and uses a majority vote before updating the front panel. In the current base:
+
+```text
+BELL on  = DP/carrier present
+BELL off = no carrier detected
+```
+
+When entering TX the firmware closes the RX audio gates and sends panel
+`SPEAKER off`; when returning to RX it reprograms the RX PLL word, opens
+`BBF1/BBF2`, restores the speaker-volume setting, sends `SPEAKER on`, and
+marks `ANT green`.
 
 ## Test Builds
 

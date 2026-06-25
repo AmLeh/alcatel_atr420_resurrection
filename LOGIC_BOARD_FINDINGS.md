@@ -111,6 +111,16 @@ disappears, close `BBF1/BBF2` and set volume to zero/mute.
 The squelch threshold itself is analog on the RF board; firmware only reacts to
 the resulting carrier-detect signal.
 
+Confirmed on the inspected station:
+
+```text
+MN13 Port6 = 0xC  ; BBF1 + BBF2, RX audio open
+MN13 Port5 = 0x8  ; working speaker-volume setting
+MN13 Port7 bit 3  ; DP carrier detect
+```
+
+The current firmware maps `DP` to the panel `BELL` indicator.
+
 ## Front panel confirmation
 
 The logic-board notes match our panel implementation:
